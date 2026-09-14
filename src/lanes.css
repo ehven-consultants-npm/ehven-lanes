@@ -1,0 +1,49 @@
+/*
+ * Responsive waterfall layout for independent peer items.
+ *
+ * CSS Multi-column Layout provides the dependable baseline. Browsers that
+ * support CSS Grid Lanes upgrade automatically without JavaScript sizing or
+ * placement.
+ *
+ * Public custom properties:
+ *
+ * --ehven-lanes-gap
+ * --ehven-lanes-lane-minimum
+ * --ehven-lanes-flow-tolerance
+ */
+
+.ehven-lanes {
+  display: block;
+  column-width: var(--ehven-lanes-lane-minimum, 18rem);
+  column-fill: balance;
+  column-gap: var(--ehven-lanes-gap, 1rem);
+}
+
+.ehven-lanes > * {
+  margin-block-end: var(--ehven-lanes-gap, 1rem);
+  break-inside: avoid;
+}
+
+@supports (display: grid-lanes) {
+  .ehven-lanes {
+    display: grid-lanes;
+    grid-template-columns:
+      repeat(
+        auto-fit,
+        minmax(
+          min(
+            100%,
+            var(--ehven-lanes-lane-minimum, 18rem)
+          ),
+          1fr
+        )
+      );
+    column-width: auto;
+    gap: var(--ehven-lanes-gap, 1rem);
+    flow-tolerance: var(--ehven-lanes-flow-tolerance, 1em);
+  }
+
+  .ehven-lanes > * {
+    margin-block-end: 0;
+  }
+}
