@@ -41,7 +41,9 @@ jobs:
       - name: Verify tag commit belongs to main
         run: |
           set -euo pipefail
+
           git fetch origin main
+
           git merge-base --is-ancestor \
             "${GITHUB_SHA}" \
             "origin/main"
@@ -49,6 +51,7 @@ jobs:
       - name: Verify release version
         run: |
           set -euo pipefail
+
           node scripts/verify-version.mjs \
             "${GITHUB_REF_NAME}"
 
@@ -66,6 +69,8 @@ jobs:
           ARTIFACT_DIRECTORY="release"
           TEMP_DIRECTORY="$(mktemp -d)"
 
+          trap 'rm -rf "${TEMP_DIRECTORY}"' EXIT
+
           PACKAGE_NAME="$(
             node --input-type=module \
               --eval="import packageMetadata from './package.json' with { type: 'json' }; console.log(packageMetadata.name);"
@@ -78,16 +83,35 @@ jobs:
 
           mkdir -p "${ARTIFACT_DIRECTORY}"
 
-          PACKAGE_TARBALL="$(
-            npm pack \
-              --pack-destination "${ARTIFACT_DIRECTORY}" \
-              --silent
-          )"
+          npm pack \
+            --pack-destination "${ARTIFACT_DIRECTORY}" \
+            --silent \
+            > /dev/null
 
-          cp dist/lanes.css \
+          shopt -s nullglob
+
+          PACKAGE_TARBALLS=(
+            "${ARTIFACT_DIRECTORY}"/*.tgz
+          )
+
+          shopt -u nullglob
+
+          if (( ${#PACKAGE_TARBALLS[@]} != 1 ))
+          then
+            echo \
+              "::error::Expected exactly one npm tarball, found ${#PACKAGE_TARBALLS[@]}."
+
+            exit 1
+          fi
+
+          PACKAGE_TARBALL="${PACKAGE_TARBALLS[0]##*/}"
+
+          cp \
+            dist/lanes.css \
             "${ARTIFACT_DIRECTORY}/lanes.css"
 
-          cp dist/lanes.min.css \
+          cp \
+            dist/lanes.min.css \
             "${ARTIFACT_DIRECTORY}/lanes.min.css"
 
           tar -xzf \
@@ -121,22 +145,61 @@ jobs:
           echo "package_tarball=${PACKAGE_TARBALL}" \
             >> "${GITHUB_OUTPUT}"
 
-      - name: Publish package through npm OIDC
+      - name: Publish verified tarball through npm OIDC
         run: |
           set -euo pipefail
 
+          ARTIFACT_DIRECTORY="release"
           PACKAGE_NAME="${{ steps.artifacts.outputs.package_name }}"
           PACKAGE_VERSION="${{ steps.artifacts.outputs.package_version }}"
+          PACKAGE_TARBALL="${{ steps.artifacts.outputs.package_tarball }}"
+          PACKAGE_PATH="${ARTIFACT_DIRECTORY}/${PACKAGE_TARBALL}"
+          REGISTRY_ERROR_FILE="$(mktemp)"
 
-          if npm view \
-            "${PACKAGE_NAME}@${PACKAGE_VERSION}" \
-            version \
-            > /dev/null 2>&1
+          trap 'rm -f "${REGISTRY_ERROR_FILE}"' EXIT
+
+          LOCAL_SHASUM="$(
+            sha1sum "${PACKAGE_PATH}" \
+              | awk '{ print $1 }'
+          )"
+
+          if PUBLISHED_SHASUM="$(
+            npm view \
+              "${PACKAGE_NAME}@${PACKAGE_VERSION}" \
+              dist.shasum \
+              2> "${REGISTRY_ERROR_FILE}"
+          )"
           then
+            if [[ "${PUBLISHED_SHASUM}" != "${LOCAL_SHASUM}" ]]
+            then
+              echo \
+                "::error::The npm registry tarball does not match the verified release tarball."
+
+              echo \
+                "Local SHA-1: ${LOCAL_SHASUM}"
+
+              echo \
+                "npm SHA-1: ${PUBLISHED_SHASUM}"
+
+              exit 1
+            fi
+
             echo \
-              "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published; skipping npm publish."
+              "${PACKAGE_NAME}@${PACKAGE_VERSION} already exists and matches the verified tarball; skipping npm publish."
+          elif grep -Eq \
+            'E404|404 Not Found' \
+            "${REGISTRY_ERROR_FILE}"
+          then
+            npm publish \
+              "./${PACKAGE_PATH}" \
+              --access public
           else
-            npm publish --access public
+            cat "${REGISTRY_ERROR_FILE}" >&2
+
+            echo \
+              "::error::Unable to determine whether ${PACKAGE_NAME}@${PACKAGE_VERSION} already exists."
+
+            exit 1
           fi
 
       - name: Create or repair GitHub Release
